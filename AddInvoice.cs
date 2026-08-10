@@ -286,7 +286,21 @@ namespace Nexo
             address.Szczegoly.NrDomu = entity.HomeNumber;
             address.Szczegoly.NrLokalu = entity.ApartmentNumber ?? string.Empty;
             address.Panstwo = country;
-            newEntity.Dane.PanstwoRejestracji = country;
+
+            var taxIdDecoded = DecodeTaxId(entity.TaxId);
+            if (taxIdDecoded != null)
+            {
+                if (taxIdDecoded.Item1 == "PL")
+                {
+                    newEntity.Dane.NIP = taxIdDecoded.Item2;
+                }
+                else
+                {
+                    newEntity.Dane.PanstwoRejestracji = country;
+                    newEntity.Dane.NIPUE = taxIdDecoded.Item1 + taxIdDecoded.Item2;
+                }
+            }
+
             if (!string.IsNullOrEmpty(entity.Phone))
             {
                 var k = new Kontakt();
@@ -304,12 +318,6 @@ namespace Nexo
                 k.Podstawowy = true;
             }
 
-            var taxIdDecoded = DecodeTaxId(entity.TaxId);
-            if (taxIdDecoded != null)
-            {
-                newEntity.Dane.NIP = taxIdDecoded.Item2;
-                newEntity.Dane.NIPUE = taxIdDecoded.Item1 + taxIdDecoded.Item2;
-            }
             var saved = newEntity.Zapisz();
             if (!saved)
             {
