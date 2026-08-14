@@ -54,6 +54,13 @@ namespace Nexo
             }
             doc.Odbiorca = GetEntity(input.Recipient);
             doc.Podmiot = GetEntity(input.Buyer);
+            // Dla nabywcy z Polski nie ruszamy transakcji handlowej - dokument ma domyślnie ustawione "S"
+            if (doc.Podmiot.AdresPodstawowy.Panstwo.KodISOAlfa2() != "PL")
+            {
+                Console.WriteLine($"Nabywca spoza Polski (państwo: {doc.Podmiot.AdresPodstawowy.Panstwo.KodISOAlfa2()}), ustalanie transakcji handlowej");
+                doc.TransakcjaHandlowa = GetTH(doc.Podmiot);
+            }
+
             if (!string.IsNullOrEmpty(input.Currency))
             {
                 doc.Waluta = GetCurrency(input.Currency);
@@ -204,25 +211,6 @@ namespace Nexo
         private Podmiot GetEntity(InvoiceEntity entity)
         {
             if (entity == null) return null;
-            if (!string.IsNullOrEmpty(entity.Symbol))
-            {
-                using var podmiot = _client.Uchwyt.Podmioty().Znajdz(entity.Symbol);
-                if (podmiot != null)
-                {
-                    Console.WriteLine($"Wyszukano podmiot {entity.Symbol} po symbolu");
-                    return podmiot.Dane;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(entity.Name))
-            {
-                using var podmiot = _client.Uchwyt.Podmioty().Znajdz(x => x.NazwaSkrocona == entity.Name);
-                if (podmiot != null)
-                {
-                    Console.WriteLine($"Wyszukano podmiot {entity.Name} po nazwie");
-                    return podmiot.Dane;
-                }
-            }
 
             if (!string.IsNullOrEmpty(entity.TaxId))
             {
@@ -236,6 +224,15 @@ namespace Nexo
                 {
                     Console.WriteLine($"Wyszukano podmiot po NIP-ie: {taxIdDecoded.Item1 + taxIdDecoded.Item2}");
                     return podmiot;
+                }
+            }
+            if (!string.IsNullOrEmpty(entity.Symbol))
+            {
+                using var podmiot = _client.Uchwyt.Podmioty().Znajdz(entity.Symbol);
+                if (podmiot != null)
+                {
+                    Console.WriteLine($"Wyszukano podmiot {entity.Symbol} po symbolu");
+                    return podmiot.Dane;
                 }
             }
             return CreateEntity(entity);
@@ -263,33 +260,37 @@ namespace Nexo
                 return null;
             }
         }
+
+        /// <summary>
+        /// Dzieli nazwę osoby fizycznej na imię i nazwisko po pierwszej spacji.
+        /// "Jan Kowalski" -> ("Jan", "Kowalski"), "Anna Maria Nowak-Kowalska" -> ("Anna", "Maria Nowak-Kowalska"),
+        /// pojedynczy człon trafia w całości do nazwiska.
+        /// </summary>
+        private static (string FirstName, string LastName) SplitPersonName(string name)
+        {
+            var parts = (name ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 0)
+            {
+                return (string.Empty, string.Empty);
+            }
+            if (parts.Length == 1)
+            {
+                return (string.Empty, parts[0]);
+            }
+            return (parts[0], string.Join(" ", parts.Skip(1)));
+        }
+
         private Podmiot CreateEntity(InvoiceEntity entity)
         {
             Console.WriteLine($"Tworzenie podmiotu, nazwa: {entity.Name}, symbol: {entity.Symbol}, NIP: {entity.TaxId}");
-            using IPodmiot newEntity = _client.Uchwyt.Podmioty().UtworzFirme();
-
-            if (!string.IsNullOrEmpty(entity.Symbol))
-            {
-                newEntity.Dane.Sygnatura = new Sygnatura
-                {
-                    PelnaSygnatura = entity.Symbol
-                };
-            }
-            newEntity.Dane.NazwaSkrocona = entity.Name;
-            newEntity.Dane.Firma.Nazwa = !string.IsNullOrEmpty(entity.FullName) ? entity.FullName : entity.Name;         
-            var country = _client.Uchwyt.Panstwa().Dane.Pierwszy(x => x.KodPanstwaUE == entity.CountrySymbol.ToUpper());
-            var glownyTyp = _client.Uchwyt.TypyAdresu().DaneDomyslne.Glowny;
-            var address = newEntity.Dane.AdresPodstawowy ?? newEntity.DodajAdres(glownyTyp);
-            address.Szczegoly.Ulica = entity.Street;
-            address.Szczegoly.Miejscowosc = entity.City;
-            address.Szczegoly.KodPocztowy = entity.PostalCode;
-            address.Szczegoly.NrDomu = entity.HomeNumber;
-            address.Szczegoly.NrLokalu = entity.ApartmentNumber ?? string.Empty;
-            address.Panstwo = country;
-
             var taxIdDecoded = DecodeTaxId(entity.TaxId);
+            var country = _client.Uchwyt.Panstwa().Dane.Pierwszy(x => x.KodPanstwaUE == entity.CountrySymbol.ToUpper());
+
+            IPodmiot newEntity;
             if (taxIdDecoded != null)
             {
+                newEntity = _client.Uchwyt.Podmioty().UtworzFirme();
+                Console.WriteLine($"Pole NIP uzupełnione, tworzenie firmy");
                 if (taxIdDecoded.Item1 == "PL")
                 {
                     newEntity.Dane.NIP = taxIdDecoded.Item2;
@@ -299,7 +300,37 @@ namespace Nexo
                     newEntity.Dane.PanstwoRejestracji = country;
                     newEntity.Dane.NIPUE = taxIdDecoded.Item1 + taxIdDecoded.Item2;
                 }
+                newEntity.Dane.Firma.Nazwa = !string.IsNullOrEmpty(entity.FullName) ? entity.FullName : entity.Name;
             }
+            else
+            {
+                newEntity = _client.Uchwyt.Podmioty().UtworzOsobe();
+
+                var personName = SplitPersonName(entity.Name);
+
+                newEntity.Dane.Osoba.Imie = personName.FirstName;
+                newEntity.Dane.Osoba.Nazwisko = personName.LastName;
+                Console.WriteLine($"Pole NIP puste, tworzenie osoby fizycznej - imię: {personName.FirstName}, nazwisko: {personName.LastName}");
+            }
+            
+            if (!string.IsNullOrEmpty(entity.Symbol))
+            {
+                newEntity.Dane.Sygnatura = new Sygnatura
+                {
+                    PelnaSygnatura = entity.Symbol
+                };
+            }
+            newEntity.Dane.NazwaSkrocona = entity.Name;
+
+            var glownyTyp = _client.Uchwyt.TypyAdresu().DaneDomyslne.Glowny;
+            var address = newEntity.Dane.AdresPodstawowy ?? newEntity.DodajAdres(glownyTyp);
+            address.Szczegoly.Ulica = entity.Street;
+            address.Szczegoly.Miejscowosc = entity.City;
+            address.Szczegoly.KodPocztowy = entity.PostalCode;
+            address.Szczegoly.NrDomu = entity.HomeNumber;
+            address.Szczegoly.NrLokalu = entity.ApartmentNumber ?? string.Empty;
+            address.Panstwo = country;
+
 
             if (!string.IsNullOrEmpty(entity.Phone))
             {
@@ -353,6 +384,53 @@ namespace Nexo
             Console.WriteLine($"Wyszukano formę płatności {payment} po nazwie");
             return p;
         }
+
+        /// <summary>
+        /// 1-transakcja przedsiębiorca z UE - SUPTK
+        /// 2-transakcja przedsiębiorca spoza UE - DPTK
+        /// 3-Konsument z UE - WSTO-OSS
+        /// 4-konsumet spoza UE - DPTK
+        /// 5 dla Polski - S 
+        /// </summary>
+        /// <param name="podmiot"></param>
+        /// <returns></returns>
+        private TransakcjaHandlowa GetTH(Podmiot podmiot)
+        {
+            var country = podmiot?.AdresPodstawowy?.Panstwo;
+            if (country == null)
+            {
+                throw new Exception($"Nie można ustalić transakcji handlowej - podmiot {podmiot?.NazwaSkrocona} nie ma państwa w adresie podstawowym");
+            }
+
+            var isCompany = podmiot.JestFirma();
+            string symbol;
+            if (country.KodISOAlfa2() == "PL")
+            {
+                symbol = "S";
+            }
+            else if (!country.CzlonekUE)
+            {
+                symbol = "DPTK";
+            }
+            else if (isCompany)
+            {
+                symbol = "SUPTK";
+            }
+            else
+            {
+                symbol = "WSTO-OSS";
+            }
+
+            ITransakcjeHandlowe mgr = _client.Uchwyt.PodajObiektTypu<InsERT.Moria.Dokumenty.Logistyka.ITransakcjeHandlowe>();
+            using var th = mgr.Znajdz(x => x.Symbol == symbol);
+            if (th == null)
+            {
+                throw new Exception($"Nie znaleziono transakcji handlowej o symbolu: {symbol}");
+            }
+            Console.WriteLine($"Wybrano transakcję handlową {symbol} - państwo: {country.KodISOAlfa2()}, członek UE: {country.CzlonekUE}, firma: {isCompany}");
+            return th.Dane;
+        }
+
         private string Error(IObiektBiznesowy doc)
         {
             var errors = new List<string>();
