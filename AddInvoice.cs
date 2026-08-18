@@ -301,6 +301,7 @@ namespace Nexo
                     newEntity.Dane.NIPUE = taxIdDecoded.Item1 + taxIdDecoded.Item2;
                 }
                 newEntity.Dane.Firma.Nazwa = !string.IsNullOrEmpty(entity.FullName) ? entity.FullName : entity.Name;
+                newEntity.Dane.NazwaSkrocona = entity.Name;
             }
             else
             {
@@ -320,8 +321,7 @@ namespace Nexo
                     PelnaSygnatura = entity.Symbol
                 };
             }
-            newEntity.Dane.NazwaSkrocona = entity.Name;
-
+            
             var glownyTyp = _client.Uchwyt.TypyAdresu().DaneDomyslne.Glowny;
             var address = newEntity.Dane.AdresPodstawowy ?? newEntity.DodajAdres(glownyTyp);
             address.Szczegoly.Ulica = entity.Street;
