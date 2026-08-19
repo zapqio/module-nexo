@@ -80,7 +80,9 @@ namespace Nexo
                 ip.Cena.NettoPrzedRabatem = pos.NetPrice ?? 0;
             }
             invoice.Przelicz();
-            invoice.Platnosci.DodajPlatnoscNatychmiastowa(GetPaymentType(input.Payment), doc.KwotaDoZaplaty);
+
+            invoice.SetPayment(GetPaymentType(input.Payment), doc.KwotaDoZaplaty);
+
             // Ustawienie pola własnego dla VIES
             if (!string.IsNullOrEmpty(_settings.ViesOwnField) && !string.IsNullOrEmpty(input.Vies))
             {
