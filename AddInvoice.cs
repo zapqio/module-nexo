@@ -329,7 +329,7 @@ namespace Nexo
             address.Szczegoly.Ulica = entity.Street;
             address.Szczegoly.Miejscowosc = entity.City;
             address.Szczegoly.KodPocztowy = entity.PostalCode;
-            address.Szczegoly.NrDomu = entity.HomeNumber;
+            address.Szczegoly.NrDomu = entity.HomeNumber ?? string.Empty;
             address.Szczegoly.NrLokalu = entity.ApartmentNumber ?? string.Empty;
             address.Panstwo = country;
 
