@@ -69,6 +69,8 @@ namespace Nexo
         public NexoConnect Connect { get; set; } = new();
         public string Warehouse { get; set; } = "MAG";
         public string ViesOwnField { get; set; }
+        public string StartLicenceDateOwnField { get; set; }
+        public string EndLicenceDateOwnField { get; set; }
         public string DefaultTemplatePrint { get; set; }
         public Dictionary<string, string> MapLaguageToTemplatePrint { get; set; }
     }

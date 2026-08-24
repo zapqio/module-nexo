@@ -1,7 +1,6 @@
 ﻿using InsERT.Moria.Dokumenty.Logistyka;
 using InsERT.Moria.Klienci;
 using InsERT.Moria.ModelDanych;
-using InsERT.Moria.PolaWlasne2;
 using InsERT.Moria.Sfera;
 using InsERT.Mox.ObiektyBiznesowe;
 using Nexo.Invoice;
@@ -22,9 +21,10 @@ namespace Nexo
         private readonly Settings _settings;
 
         public AddInvoice(NexoClient client, Settings settings)
-        {
+        {           
             _client = client;
             _settings = settings;
+            NexoExtensions.Client = _client;
         }
         public Type InData()
         {
@@ -51,9 +51,23 @@ namespace Nexo
             if (input.SaleDate.HasValue)
             {
                 doc.DataSprzedazy = input.SaleDate.Value;
+                doc.DataWprowadzenia = input.SaleDate.Value;
+
             }
-            doc.Odbiorca = GetEntity(input.Recipient);
+
+            // Nabywca
             doc.Podmiot = GetEntity(input.Buyer);
+
+            // Odbiorca
+            if (input.Recipient != null)
+            {
+                doc.Odbiorca = GetEntity(input.Recipient);
+                if (input.Recipient.BindWithBuyer ?? false)
+                {
+                    doc.Podmiot.BindWithByuer(doc.Odbiorca, input.Recipient);
+                }
+            }
+
             // Dla nabywcy z Polski nie ruszamy transakcji handlowej - dokument ma domyślnie ustawione "S"
             if (doc.Podmiot.AdresPodstawowy.Panstwo.KodISOAlfa2() != "PL")
             {
@@ -83,25 +97,17 @@ namespace Nexo
 
             invoice.SetPayment(GetPaymentType(input.Payment), doc.KwotaDoZaplaty);
 
-            // Ustawienie pola własnego dla VIES
-            if (!string.IsNullOrEmpty(_settings.ViesOwnField) && !string.IsNullOrEmpty(input.Vies))
-            {
-                var ownFieldZ = _client.Uchwyt.PodajObiektTypu<IZaawansowanePolaWlasne>();
-                var u = ownFieldZ.PosiadaZaawansowanePoleWlasne<DokumentDS>(_settings.ViesOwnField);
-                if (u)
-                {
-                    var ownFieldAccesor = _client.Uchwyt.UtworzPolaWlasneAdv2Accessor(doc);
-                    ownFieldAccesor.UstawWartoscTypuTekst(_settings.ViesOwnField, input.Vies);
-                }
-                else
-                {
-                    Console.WriteLine($"Nie znaleziono pola własnego '{_settings.ViesOwnField}' dla dokumentu");
-                }
-            }
+            // Ustawienie pól własnych (VIES, daty licencji)
+            invoice.SetOwnFields(
+                OwnField.Text(_settings.ViesOwnField, input.Vies),
+                OwnField.Date(_settings.StartLicenceDateOwnField, input.StartLicenceDate),
+                OwnField.Date(_settings.EndLicenceDateOwnField, input.EndLicenceDate));
+
+
             var saved = invoice.Zapisz();
             if (!saved)
             {
-                throw new Exception($"Nie udało się zapisać faktury: {Error(invoice)}");
+                throw new Exception($"Nie udało się zapisać faktury: {invoice.Error()}");
             }
             else
             {
@@ -284,36 +290,66 @@ namespace Nexo
 
         private Podmiot CreateEntity(InvoiceEntity entity)
         {
-            Console.WriteLine($"Tworzenie podmiotu, nazwa: {entity.Name}, symbol: {entity.Symbol}, NIP: {entity.TaxId}");
+            Console.WriteLine($"Tworzenie podmiotu - nazwa: '{entity.Name}', pełna nazwa: '{entity.FullName}', symbol: '{entity.Symbol}', NIP: '{entity.TaxId}', kraj: '{entity.CountrySymbol}'");
+            if (string.IsNullOrWhiteSpace(entity.CountrySymbol))
+            {
+                throw new Exception($"Nie uzupełniono kodu kraju (CountrySymbol) dla podmiotu '{entity.Name}' (symbol: '{entity.Symbol}', NIP: '{entity.TaxId}') - bez niego nie da się ustalić państwa adresu");
+            }
+
             var taxIdDecoded = DecodeTaxId(entity.TaxId);
             var country = _client.Uchwyt.Panstwa().Dane.Pierwszy(x => x.KodPanstwaUE == entity.CountrySymbol.ToUpper());
-
-            IPodmiot newEntity;
-            if (taxIdDecoded != null)
+            if (country != null)
             {
-                newEntity = _client.Uchwyt.Podmioty().UtworzFirme();
-                Console.WriteLine($"Pole NIP uzupełnione, tworzenie firmy");
-                if (taxIdDecoded.Item1 == "PL")
-                {
-                    newEntity.Dane.NIP = taxIdDecoded.Item2;
-                }
-                else
-                {
-                    newEntity.Dane.PanstwoRejestracji = country;
-                    newEntity.Dane.NIPUE = taxIdDecoded.Item1 + taxIdDecoded.Item2;
-                }
-                newEntity.Dane.Firma.Nazwa = !string.IsNullOrEmpty(entity.FullName) ? entity.FullName : entity.Name;
-                newEntity.Dane.NazwaSkrocona = entity.Name;
+                Console.WriteLine($"Znaleziono państwo {country.KodPanstwaUE} (ISO: {country.KodISOAlfa2()}), członek UE: {country.CzlonekUE}");
             }
             else
             {
-                newEntity = _client.Uchwyt.Podmioty().UtworzOsobe();
+                Console.WriteLine($"UWAGA: nie znaleziono państwa o kodzie '{entity.CountrySymbol}' - podmiot powstanie bez państwa w adresie, zapis prawdopodobnie się nie powiedzie");
+            }
 
+            IPodmiot newEntity;
+            if (entity.IsCompany)
+            {
+                // tworze firme
+                newEntity = _client.Uchwyt.Podmioty().UtworzFirme();
+                if (taxIdDecoded == null)
+                {
+                    Console.WriteLine("Tworzenie firmy - NIP nieuzupełniony");
+                    newEntity.Dane.NIP = "";
+                }
+                else
+                {
+                    if (taxIdDecoded.Item1 == "PL")
+                    {
+                        newEntity.Dane.NIP = taxIdDecoded.Item2;
+                        Console.WriteLine($"Tworzenie firmy - NIP krajowy: {newEntity.Dane.NIP}");
+                    }
+                    else
+                    {
+                        newEntity.Dane.PanstwoRejestracji = country;
+                        newEntity.Dane.NIPUE = taxIdDecoded.Item1 + taxIdDecoded.Item2;
+                        Console.WriteLine($"Tworzenie firmy - NIP UE: {newEntity.Dane.NIPUE}, państwo rejestracji: {entity.CountrySymbol}");
+                    }
+                }
+                newEntity.Dane.Firma.Nazwa = !string.IsNullOrEmpty(entity.FullName) ? entity.FullName : entity.Name;
+                newEntity.Dane.NazwaSkrocona = entity.Name;
+                Console.WriteLine($"Nazwa firmy: '{newEntity.Dane.Firma.Nazwa}', nazwa skrócona: '{newEntity.Dane.NazwaSkrocona}'");
+            }
+            else
+            {
+                // tworze osobe fizyczną
+
+                newEntity = _client.Uchwyt.Podmioty().UtworzOsobe();
                 var personName = SplitPersonName(entity.Name);
+                Console.WriteLine($"Tworzenie osoby fizycznej - imię: '{personName.FirstName}', nazwisko: '{personName.LastName}'");
+                if (taxIdDecoded != null)
+                {
+                    Console.WriteLine($"UWAGA: podano NIP '{entity.TaxId}', ale IsCompany = false - NIP nie zostanie zapisany na osobie fizycznej");
+                }
 
                 newEntity.Dane.Osoba.Imie = personName.FirstName;
                 newEntity.Dane.Osoba.Nazwisko = personName.LastName;
-                Console.WriteLine($"Pole NIP puste, tworzenie osoby fizycznej - imię: {personName.FirstName}, nazwisko: {personName.LastName}");
+
             }
             
             if (!string.IsNullOrEmpty(entity.Symbol))
@@ -322,6 +358,11 @@ namespace Nexo
                 {
                     PelnaSygnatura = entity.Symbol
                 };
+                Console.WriteLine($"Ustawiono symbol podmiotu: {entity.Symbol}");
+            }
+            else
+            {
+                Console.WriteLine("Symbol nieuzupełniony - zostanie nadany automatycznie przez Nexo");
             }
             
             var glownyTyp = _client.Uchwyt.TypyAdresu().DaneDomyslne.Glowny;
@@ -332,7 +373,7 @@ namespace Nexo
             address.Szczegoly.NrDomu = entity.HomeNumber ?? string.Empty;
             address.Szczegoly.NrLokalu = entity.ApartmentNumber ?? string.Empty;
             address.Panstwo = country;
-
+            Console.WriteLine($"Adres podstawowy - ulica: '{address.Szczegoly.Ulica}', nr domu: '{address.Szczegoly.NrDomu}', nr lokalu: '{address.Szczegoly.NrLokalu}', kod: '{address.Szczegoly.KodPocztowy}', miejscowość: '{address.Szczegoly.Miejscowosc}'");
 
             if (!string.IsNullOrEmpty(entity.Phone))
             {
@@ -341,6 +382,7 @@ namespace Nexo
                 k.Wartosc = entity.Phone;
                 k.Rodzaj = _client.Uchwyt.RodzajeKontaktu().DaneDomyslne.Telefon;
                 k.Podstawowy = true;
+                Console.WriteLine($"Dodano kontakt podstawowy - telefon: {k.Wartosc}");
             }
             if (!string.IsNullOrEmpty(entity.Email))
             {
@@ -349,15 +391,19 @@ namespace Nexo
                 k.Wartosc = entity.Email.ToLower();
                 k.Rodzaj = _client.Uchwyt.RodzajeKontaktu().DaneDomyslne.Email;
                 k.Podstawowy = true;
+                Console.WriteLine($"Dodano kontakt podstawowy - e-mail: {k.Wartosc}");
             }
 
             var saved = newEntity.Zapisz();
             if (!saved)
             {
-                throw new Exception($"Nie udało się zapisać podmiotu: {Error(newEntity)}");
+                throw new Exception($"Nie udało się zapisać podmiotu '{entity.Name}' (symbol: '{entity.Symbol}', NIP: '{entity.TaxId}', kraj: '{entity.CountrySymbol}'): {newEntity.Error()}");
             }
-            Console.WriteLine($"Utworzono podmiot - Nazwa: {newEntity.Dane.NazwaSkrocona}, NIP: {newEntity.Dane.NIPUE}, Symbol: {newEntity.Dane.Sygnatura.PelnaSygnatura}");
-            return newEntity.Dane;
+
+            var created = newEntity.Dane;
+            var createdTaxId = !string.IsNullOrEmpty(created.NIPUE) ? created.NIPUE : created.NIP;
+            Console.WriteLine($"Utworzono podmiot - symbol: {created.Sygnatura?.PelnaSygnatura ?? "(brak)"}, nazwa: '{created.NazwaSkrocona}', NIP: {(string.IsNullOrEmpty(createdTaxId) ? "(brak)" : createdTaxId)}, firma: {created.JestFirma()}");
+            return created;
         }
 
         private StawkaVat GetTax(InvoicePosition position)
@@ -431,35 +477,6 @@ namespace Nexo
             }
             Console.WriteLine($"Wybrano transakcję handlową {symbol} - państwo: {country.KodISOAlfa2()}, członek UE: {country.CzlonekUE}, firma: {isCompany}");
             return th.Dane;
-        }
-
-        private string Error(IObiektBiznesowy doc)
-        {
-            var errors = new List<string>();
-            foreach (var itemE in doc.Bledy)
-            {
-                string e = "";
-                if (itemE.Errors.Any())
-                {
-                    e = "Obiekty: " + string.Join(", ", itemE.Errors.Select(y => $"{y} - {itemE.GetType().Name}"));
-                }
-                string p = "";
-                if (itemE.MemberErrors.Any())
-                {
-                    p = "Pola: ";
-                    var temp = new List<string>();
-                    foreach (var itemP in itemE.MemberErrors)
-                    {
-                        var w = $"{itemP.Key} - {string.Join(" ", itemP.Select(x => itemE.GetType().Name + "." + x))}";
-                        temp.Add(w);
-                    }
-                    p += string.Join("\n   ", temp);
-                }
-                errors.Add(string.Join(" ", e, p));
-
-            }
-
-            return "\n" + string.Join('\n', errors.Select((x, i) => $"{i + 1}. {x}"));
         }
     }
 }
