@@ -19,11 +19,13 @@ namespace Nexo
     {
         private NexoClient _client;
         private readonly Settings _settings;
+        private readonly SlackClient _slack;
 
-        public AddInvoice(NexoClient client, Settings settings)
+        public AddInvoice(NexoClient client, Settings settings, SlackClient slack)
         {           
             _client = client;
             _settings = settings;
+            _slack = slack;
             NexoExtensions.Client = _client;
         }
         public Type InData()
@@ -104,6 +106,21 @@ namespace Nexo
                 OwnField.Date(_settings.EndLicenceDateOwnField, input.EndLicenceDate));
 
 
+            // Licencja na przełomie lat (np. start 2026, koniec 2027) - powiadomienie idzie
+            // dopiero po udanym zapisie, żeby było w nim czym się posłużyć: numer dokumentu.
+            var crossYearLicence = input.StartLicenceDate.HasValue
+                && input.EndLicenceDate.HasValue
+                && input.StartLicenceDate.Value.Year != input.EndLicenceDate.Value.Year;
+
+            if (crossYearLicence)
+            {
+                if (!string.IsNullOrEmpty(_settings.RMPFlagName))
+                    invoice.Dane.SetFlag(_settings.RMPFlagName);
+                else
+                    Console.Error.WriteLine($"Nie ustawiono flagi: Rozliczenia międzyokresowe (RMP)");
+
+            }
+
             var saved = invoice.Zapisz();
             if (!saved)
             {
@@ -112,6 +129,16 @@ namespace Nexo
             else
             {
                 Console.WriteLine($"Utworzono fakturę: {invoice.Dane.NumerWewnetrzny.PelnaSygnatura}");
+
+                if (crossYearLicence)
+                {
+                    // Send nie rzuca - nieudane powiadomienie nie ma prawa wywrócić wystawionej faktury.
+                    await _slack.Send(
+                        $"*Faktura {invoice.Dane.NumerWewnetrzny.PelnaSygnatura}* - licencja na przełomie lat "
+                        + $"({input.StartLicenceDate.Value.Year} - {input.EndLicenceDate.Value.Year})\n"
+                        + $"Okres: {input.StartLicenceDate.Value:yyyy-MM-dd} - {input.EndLicenceDate.Value:yyyy-MM-dd}\n"
+                        + $"Nabywca: {doc.Podmiot?.NazwaSkrocona}");
+                }
             }
 
             var namefile = BitConverter.ToString(MD5.HashData(Encoding.UTF8.GetBytes(invoice.Dane.NumerWewnetrzny.PelnaSygnatura))).Replace("-", "");

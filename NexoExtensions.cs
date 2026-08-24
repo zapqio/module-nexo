@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Windows.Controls;
 using System.Windows.Media.Animation;
 using InsERT.Moria.Dokumenty.Logistyka;
+using InsERT.Moria.Flagi;
 using InsERT.Moria.Klienci;
 using InsERT.Moria.KsiegowoscPelna;
 using InsERT.Moria.ModelDanych;
@@ -47,7 +48,7 @@ namespace Nexo
             {
                 if (!ownFieldZ.PosiadaZaawansowanePoleWlasne<DokumentDS>(field.Name))
                 {
-                    Console.WriteLine($"Nie znaleziono pola własnego '{field.Name}' dla dokumentu");
+                    Console.Error.WriteLine($"Nie znaleziono pola własnego '{field.Name}' dla dokumentu");
                     continue;
                 }
 
@@ -60,7 +61,7 @@ namespace Nexo
                         ownFieldAccesor.UstawWartoscTypuData(field.Name, (DateTime?)field.Value);
                         break;
                     default:
-                        Console.WriteLine($"Nieobsługiwany typ pola własnego '{field.Name}': {field.Type}");
+                        Console.Error.WriteLine($"Nieobsługiwany typ pola własnego '{field.Name}': {field.Type}");
                         break;
                 }
             }
@@ -93,7 +94,7 @@ namespace Nexo
             }
             else
             {
-                Console.WriteLine($"Nie udało się powiązać podmiotów: {iNexoBuyer.Error()}");
+                Console.Error.WriteLine($"Nie udało się powiązać podmiotów: {iNexoBuyer.Error()}");
             }
         }
 
@@ -124,6 +125,51 @@ namespace Nexo
             }
 
             return "\n" + string.Join('\n', errors.Select((x, i) => $"{i + 1}. {x}"));
+        }
+    
+    
+        /// <summary>
+        /// Ustawia flage wlasna na obiekcie (dokument, podmiot, ...). Brak flagi w slowniku
+        /// ani blad przypisania nie przerywaja operacji biznesowej - zostaje wpis w logu.
+        /// </summary>
+        public static void SetFlag(this IFlagsSupport obj, string flagName)
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(flagName))
+            {
+                return;
+            }
+
+            try
+            {
+                var newFlag = Client.Uchwyt.FlagiWlasne().Dane.Pierwszy(x => x.Nazwa == flagName);
+                if (newFlag == null)
+                {
+                    Console.Error.WriteLine($"Nie znaleziono flagi własnej o nazwie '{flagName}'");
+                    return;
+                }
+
+                var flagBefore = obj.FlagaWlasna?.Nazwa;
+                if (flagBefore == flagName)
+                {
+                    Console.WriteLine($"Flaga własna '{flagName}' jest już ustawiona, pomijam");
+                    return;
+                }
+
+                obj.FlagaWlasna = newFlag;
+
+                if (string.IsNullOrEmpty(flagBefore))
+                {
+                    Console.WriteLine($"Ustawiono flagę własną '{flagName}'");
+                }
+                else
+                {
+                    Console.WriteLine($"Zmieniono flagę własną z '{flagBefore}' na '{flagName}'");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Nie udało się ustawić flagi własnej '{flagName}': {ex.Message}");
+            }
         }
     }
 }

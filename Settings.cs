@@ -72,6 +72,19 @@ namespace Nexo
         public string StartLicenceDateOwnField { get; set; }
         public string EndLicenceDateOwnField { get; set; }
         public string DefaultTemplatePrint { get; set; }
+
+        /// <summary>Token bota Slacka (xoxb-...) - uzywany przez <see cref="SlackClient"/>.</summary>
+        public string SlackToken { get; set; }
+
+        /// <summary>Domyslny kanal powiadomien, np. "#erp-alerty" albo ID kanalu.</summary>
+        public string SlackChannel { get; set; }
+
         public Dictionary<string, string> MapLaguageToTemplatePrint { get; set; }
+
+        /// <summary>
+        /// Flaga : "Rozliczenia międzyokresowe (RMP)"
+        /// </summary>
+        public string RMPFlagName { get; set; }
+
     }
 }
