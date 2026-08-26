@@ -50,12 +50,6 @@ namespace Nexo
             var doc = invoice.Dane;
             doc.Magazyn = _client.Uchwyt.Magazyny().Dane.Pierwszy(x => x.Symbol == _settings.Warehouse);
             doc.Uwagi = input.Comment;
-            if (input.SaleDate.HasValue)
-            {
-                doc.DataSprzedazy = input.SaleDate.Value;
-                doc.DataWprowadzenia = input.SaleDate.Value;
-
-            }
 
             // Nabywca
             doc.Podmiot = GetEntity(input.Buyer);
