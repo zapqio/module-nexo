@@ -121,6 +121,14 @@ namespace Nexo
 
             }
 
+            if (input.StartLicenceDate.HasValue && input.EndLicenceDate.HasValue)
+            {
+                var licencePeriod = $"Okres licencji: {input.StartLicenceDate.Value:yyyy-MM-dd} - {input.EndLicenceDate.Value:yyyy-MM-dd}";
+                invoice.Dane.Uwagi = string.IsNullOrWhiteSpace(invoice.Dane.Uwagi)
+                    ? licencePeriod
+                    : invoice.Dane.Uwagi + "\n" + licencePeriod;
+            }
+
             var saved = invoice.Zapisz();
             if (!saved)
             {
