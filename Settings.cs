@@ -71,6 +71,7 @@ namespace Nexo
         public string ViesOwnField { get; set; }
         public string StartLicenceDateOwnField { get; set; }
         public string EndLicenceDateOwnField { get; set; }
+        public string ZapqInvoiceIdOwnField { get; set; }
         public string DefaultTemplatePrint { get; set; }
 
         /// <summary>Token bota Slacka (xoxb-...) - uzywany przez <see cref="SlackClient"/>.</summary>

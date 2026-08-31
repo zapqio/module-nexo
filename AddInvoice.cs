@@ -2,6 +2,7 @@
 using InsERT.Moria.Klienci;
 using InsERT.Moria.ModelDanych;
 using InsERT.Moria.Sfera;
+using InsERT.Mox.DataExtensions;
 using InsERT.Mox.ObiektyBiznesowe;
 using Nexo.Invoice;
 using System;
@@ -46,10 +47,29 @@ namespace Nexo
         public async Task<string> Run(string data)
         {
             var input = System.Text.Json.JsonSerializer.Deserialize<InvoiceIn>(data);
+
+            // Faktura mogła już zostać wystawiona (np. ponowione wywołanie) - szukamy jej
+            // po polu własnym z UniqueId i zamiast duplikatu oddajemy istniejący dokument.
+            var existingInvoice = FindInvoiceByUniqueId(input.UniqueId);
+            if (existingInvoice != null)
+            {
+                Console.WriteLine($"Faktura dla UniqueId '{input.UniqueId}' już istnieje: {existingInvoice.NumerWewnetrzny.PelnaSygnatura} - pomijam wystawianie");
+                return System.Text.Json.JsonSerializer.Serialize(new InvoiceOut
+                {
+                    Number = existingInvoice.NumerWewnetrzny.PelnaSygnatura,
+                    Pdf = PrintToPdf(existingInvoice, input.TemplatePrintLanguage),
+                });
+            }
+
             using IDokumentSprzedazy invoice = _client.Uchwyt.DokumentySprzedazy().UtworzFaktureSprzedazy();
             var doc = invoice.Dane;
             doc.Magazyn = _client.Uchwyt.Magazyny().Dane.Pierwszy(x => x.Symbol == _settings.Warehouse);
             doc.Uwagi = input.Comment;
+
+            if (input.SaleDate.HasValue)
+            {
+                doc.DataSprzedazy = input.SaleDate.Value;
+            }
 
             // Nabywca
             doc.Podmiot = GetEntity(input.Buyer);
@@ -93,8 +113,8 @@ namespace Nexo
 
             invoice.SetPayment(GetPaymentType(input.Payment), doc.KwotaDoZaplaty);
 
-            // Ustawienie pól własnych (VIES, daty licencji)
             invoice.SetOwnFields(
+                OwnField.Text(_settings.ZapqInvoiceIdOwnField, input.UniqueId),
                 OwnField.Text(_settings.ViesOwnField, input.Vies),
                 OwnField.Date(_settings.StartLicenceDateOwnField, input.StartLicenceDate),
                 OwnField.Date(_settings.EndLicenceDateOwnField, input.EndLicenceDate));
@@ -143,19 +163,70 @@ namespace Nexo
                 }
             }
 
-            var namefile = BitConverter.ToString(MD5.HashData(Encoding.UTF8.GetBytes(invoice.Dane.NumerWewnetrzny.PelnaSygnatura))).Replace("-", "");
+            return System.Text.Json.JsonSerializer.Serialize(new InvoiceOut
+            {
+                Number = invoice.Dane.NumerWewnetrzny.PelnaSygnatura,
+                Pdf = PrintToPdf(invoice.Dane, input.TemplatePrintLanguage),
+            });
+        }
+
+        /// <summary>
+        /// Szuka wcześniej wystawionej faktury po polu własnym z identyfikatorem z systemu zewnętrznego.
+        /// Brak UniqueId na wejściu albo nieskonfigurowane pole własne = brak kontroli duplikatów.
+        /// </summary>
+        private DokumentDS FindInvoiceByUniqueId(string uniqueId)
+        {
+            if (string.IsNullOrWhiteSpace(uniqueId))
+            {
+                return null;
+            }
+
+            var ownFieldName = _settings.ZapqInvoiceIdOwnField;
+            if (string.IsNullOrWhiteSpace(ownFieldName))
+            {
+                Console.Error.WriteLine("Nie ustawiono pola własnego z identyfikatorem (ZapqInvoiceIdOwnField) - pomijam sprawdzenie, czy faktura już istnieje");
+                return null;
+            }
+
+            // Pole musi istnieć w bazie - inaczej ResolveExtensionProperties rzuca surowym
+            // "Extension property of name '...' not found". Skoro dostaliśmy UniqueId, to kontrola
+            // duplikatów ma działać - lepiej powiedzieć wprost, czego brakuje, niż po cichu
+            // wystawić drugi dokument.
+            //if (PolaWlasneDokumentDS_Adv2.ExtensionProperty(ownFieldName) == null)
+            //{
+            //    throw new Exception($"Nie znaleziono pola własnego '{ownFieldName}' (ZapqInvoiceIdOwnField) na dokumencie sprzedaży - bez niego nie da się sprawdzić, czy faktura o UniqueId '{uniqueId}' już istnieje");
+            //}
+
+            // PolaWlasneAdv2.Get<T>() to zwykła metoda .NET i LINQ to Entities jej nie zna
+            // ("does not recognize the method ... Get[String]"). ResolveExtensionProperties()
+            // przepisuje to wywołanie na kolumnę, w której pole własne faktycznie siedzi - dlatego
+            // musi lecieć na GOTOWYM zapytaniu, PO Where(), a nie przed nim.
+            return _client.Uchwyt.DokumentySprzedazy().Dane.Wszystkie()
+                .Where(a => a.PolaWlasneAdv2.Get<string>(ownFieldName) == uniqueId)
+                .ResolveExtensionProperties()
+                .FirstOrDefault();
+        }
+
+        /// <summary>
+        /// Drukuje dokument do PDF-a i zwraca zawartość pliku w base64.
+        /// Szablon: MapLaguageToTemplatePrint (po języku) → DefaultTemplatePrint → systemowy.
+        /// Plik tymczasowy powstaje w %TEMP%\runner i jest kasowany po odczycie.
+        /// </summary>
+        private string PrintToPdf(DokumentDS document, string templatePrintLanguage) 
+        {
+            var namefile = BitConverter.ToString(MD5.HashData(Encoding.UTF8.GetBytes(document.NumerWewnetrzny.PelnaSygnatura))).Replace("-", "");
             var dir = Path.Combine(Path.GetTempPath(), "runner");
             Directory.CreateDirectory(dir);
             Console.WriteLine(Path.Combine(dir, namefile));
             using var print = _client.Uchwyt.Wydruki().Utworz(InsERT.Moria.Wydruki.Enums.TypWzorcaWydruku.FakturaSprzedazy);
-            print.ObiektDoWydruku = invoice.Dane;
+            print.ObiektDoWydruku = document;
 
             // Wybór szablonu wydruku: MapLaguageToTemplatePrint → DefaultTemplatePrint → systemowy
             bool templateSet = false;
 
             if (_settings.MapLaguageToTemplatePrint != null
-                && !string.IsNullOrEmpty(input.TemplatePrintLanguage)
-                && _settings.MapLaguageToTemplatePrint.TryGetValue(input.TemplatePrintLanguage, out var mappedTemplateName))
+                && !string.IsNullOrEmpty(templatePrintLanguage)
+                && _settings.MapLaguageToTemplatePrint.TryGetValue(templatePrintLanguage, out var mappedTemplateName))
             {
                 var template = print.ParametryDrukowania.DostepneWzorce.FirstOrDefault(x => x.Nazwa == mappedTemplateName);
                 if (template != null)
@@ -165,7 +236,7 @@ namespace Nexo
                 }
                 else
                 {
-                    Console.WriteLine($"Nie znaleziono szablonu '{mappedTemplateName}' dla języka '{input.TemplatePrintLanguage}'");
+                    Console.WriteLine($"Nie znaleziono szablonu '{mappedTemplateName}' dla języka '{templatePrintLanguage}'");
                 }
             }
 
@@ -205,11 +276,7 @@ namespace Nexo
             var filePath = Path.Combine(dir, namefile) + ".pdf";
             var pdf = Convert.ToBase64String(File.ReadAllBytes(filePath));
             File.Delete(filePath);
-            return System.Text.Json.JsonSerializer.Serialize(new InvoiceOut
-            {
-                Number = invoice.Dane.NumerWewnetrzny.PelnaSygnatura,
-                Pdf = pdf,
-            });         
+            return pdf;
         }
 
         private void ValidatePosition(InvoicePosition pos)

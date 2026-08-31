@@ -5,6 +5,7 @@ namespace Nexo.Invoice
 {
     public class InvoiceIn
     {
+        public string UniqueId { get; set; }
         public string Vies { get; set; } //odpowiedź na pytanie, czy nabywca jest podatnikiem VAT UE
         public InvoiceEntity Buyer { get; set; } //podmiot/nabywca
         public string Comment { get; set; }
@@ -14,7 +15,6 @@ namespace Nexo.Invoice
         public List<InvoicePosition> Positions { get; set; }
         public InvoiceEntity Recipient { get; set; } //odbiorca
         public string TemplatePrintLanguage { get; set; } //język, używany do wyboru szablonu wydruku
-
         public DateTime? StartLicenceDate { get; set; }
         public DateTime? EndLicenceDate { get; set; }
 

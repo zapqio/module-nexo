@@ -38,6 +38,9 @@
 		<Reference Include="InsERT.Mox.Core">
 			<HintPath>$(nexoSdkBinPath)InsERT.Mox.Core.dll</HintPath>
 		</Reference>
+		<Reference Include="InsERT.Mox.DataExtensions">
+			<HintPath>$(nexoSdkBinPath)InsERT.Mox.DataExtensions.dll</HintPath>
+		</Reference>
 		<Reference Include="InsERT.Mox.EntityFramework.Core">
 			<HintPath>$(nexoSdkBinPath)InsERT.Mox.EntityFramework.Core.dll</HintPath>
 		</Reference>
