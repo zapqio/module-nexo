@@ -318,7 +318,7 @@ namespace Nexo
 
             if (!string.IsNullOrEmpty(entity.TaxId))
             {
-                var taxIdDecoded = DecodeTaxId(entity.TaxId);
+                var taxIdDecoded = DecodeTaxId(entity.TaxId, entity.CountrySymbol);
                 if (taxIdDecoded == null)
                 {
                     throw new Exception($"Nieprawidłowy NIP: {entity.TaxId}");
@@ -342,27 +342,102 @@ namespace Nexo
             return CreateEntity(entity);
         }
 
-        private Tuple<string, string> DecodeTaxId(string taxId)
+        /// <summary>
+        /// Kody kraju, ktore oznaczaja to samo panstwo, a roznia sie zapisem: prefiks NIP-u UE
+        /// kontra kod ISO. Grecja ma w NIP-ie "EL", a w ISO "GR"; Irlandia Polnocna wystawia NIP-y
+        /// z prefiksem "XI", ale w slowniku panstw jest jako Wielka Brytania ("GB").
+        /// Mapa jest symetryczna - kazdy kod wskazuje na swoj odpowiednik.
+        /// </summary>
+        private static readonly Dictionary<string, string> CountryCodeAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "GR", "EL" },
+            { "EL", "GR" },
+            { "XI", "GB" },
+            { "GB", "XI" },
+        };
+
+        /// <summary>
+        /// Odpowiednik kodu kraju z <see cref="CountryCodeAliases"/> albo ten sam kod, gdy aliasu nie ma.
+        /// </summary>
+        private static string CountryCodeAlias(string code)
+        {
+            return code != null && CountryCodeAliases.TryGetValue(code, out var alias) ? alias : code;
+        }
+
+        /// <summary>
+        /// Kod kraju w postaci uzywanej w NIP-ie UE: Grecja ma w numerze "EL", choc jej kod ISO to "GR".
+        /// Pozostale kody zostaja bez zmian - w szczegolnosci "GB" nie zamienia sie na "XI", bo z kodu
+        /// kraju nie wynika, ze chodzi o Irlandie Polnocna; jesli ma byc "XI", musi przyjsc w NIP-ie.
+        /// </summary>
+        private static string VatCountryCode(string code)
+        {
+            return string.Equals(code, "GR", StringComparison.OrdinalIgnoreCase) ? "EL" : code;
+        }
+
+        /// <summary>
+        /// Sprowadza kod kraju do jednej postaci na potrzeby porownania: "GR" i "EL" to Grecja,
+        /// "XI" i "GB" to Wielka Brytania. Dzieki temu NIP "EL123456789" pasuje do CountrySymbol "GR",
+        /// a NIP "XI123456789" do "GB".
+        /// </summary>
+        private static string SameCountryCode(string code)
+        {
+            if (code == null)
+            {
+                return null;
+            }
+            // Za wspolna postac bierzemy alfabetycznie mniejszy kod z pary - wazne tylko to,
+            // zeby oba kody z pary daly ten sam wynik.
+            var alias = CountryCodeAlias(code);
+            return string.CompareOrdinal(code, alias) <= 0 ? code : alias;
+        }
+
+        /// <summary>
+        /// Rozkłada NIP na kod kraju i sam numer. Kod kraju może przyjść dwiema drogami -
+        /// jako prefiks NIP-u ("DE811907980") albo jako CountrySymbol podmiotu - i te dwie drogi
+        /// muszą się zgadzać:
+        ///   - NIP z prefiksem + ten sam kod kraju ("DE811907980" + "DE") -> ("DE", "811907980"),
+        ///   - NIP bez prefiksu + kod kraju ("811907980" + "DE")          -> ("DE", "811907980"),
+        ///   - NIP z prefiksem + INNY kod kraju ("DE811907980" + "PL")    -> wyjątek.
+        ///
+        /// Rozbieżność zgłaszamy błędem, bo nie da się zgadnąć, która strona ma rację:
+        /// z prefiksu bierze się NIP UE, a z CountrySymbol państwo adresu i PanstwoRejestracji -
+        /// przepuszczony rozjazd daje podmiot z niemieckim NIP-em UE na polskim adresie.
+        ///
+        /// Brak kodu kraju po obu stronach oznacza NIP krajowy ("PL"). Za zgodne uznajemy też
+        /// kody z jednej pary z <see cref="CountryCodeAliases"/> - Grecja ma w NIP-ie "EL",
+        /// a w ISO "GR", Irlandia Północna wystawia NIP-y z "XI", a w słowniku państw jest "GB".
+        /// Gdy NIP przyjdzie bez prefiksu, kod kraju podmiotu zamieniamy na ten używany
+        /// w numerze VAT ("GR" -> "EL"); prefiks podany w NIP-ie zostaje bez zmian.
+        /// </summary>
+        private Tuple<string, string> DecodeTaxId(string taxId, string countryCode)
         {
             if (string.IsNullOrEmpty(taxId))
             {
                 return null;
             }
-            var reqex = new System.Text.RegularExpressions.Regex(@"^(\D{2})?(.+)");
-            var match = reqex.Match(taxId.Replace("-", ""));
-            var code = "PL";
-            if (match != null && match.Success)
-            {
-                if (match.Groups[1].Success)
-                {
-                    code = match.Groups[1].Value.ToUpper();
-                }
-                return new Tuple<string, string>(code, match.Groups[2].Value);
-            }
-            else
+            var reqex = new System.Text.RegularExpressions.Regex(@"^([A-Za-z]{2})?(.+)");
+            var match = reqex.Match(taxId.Replace("-", "").Replace(" ", ""));
+            if (match == null || !match.Success)
             {
                 return null;
             }
+
+            var entityCode = string.IsNullOrWhiteSpace(countryCode) ? null : countryCode.Trim().ToUpper();
+            var taxIdCode = match.Groups[1].Success ? match.Groups[1].Value.ToUpper() : null;
+
+            if (taxIdCode != null && entityCode != null && SameCountryCode(taxIdCode) != SameCountryCode(entityCode))
+            {
+                throw new Exception(
+                    $"Kod kraju w NIP-ie ('{taxIdCode}' w '{taxId}') nie zgadza się z kodem kraju podmiotu " +
+                    $"(CountrySymbol: '{countryCode}') - popraw jedno albo drugie. NIP z prefiksem kraju " +
+                    $"musi mieć ten sam kod, co podmiot, albo przyjść bez prefiksu (sam numer).");
+            }
+
+            // Bez prefiksu w NIP-ie kod kraju bierzemy z podmiotu; gdy nie ma go po żadnej stronie,
+            // zostaje NIP krajowy. Kod przepuszczamy przez VatCountryCode, żeby w numerze wylądował
+            // prefiks używany w NIP-ie UE ("GR" -> "EL"); "XI" Irlandii Północnej zostaje bez zmian.
+            var code = VatCountryCode(taxIdCode ?? entityCode) ?? "PL";
+            return new Tuple<string, string>(code, match.Groups[2].Value);
         }
 
         /// <summary>
@@ -392,8 +467,13 @@ namespace Nexo
                 throw new Exception($"Nie uzupełniono kodu kraju (CountrySymbol) dla podmiotu '{entity.Name}' (symbol: '{entity.Symbol}', NIP: '{entity.TaxId}') - bez niego nie da się ustalić państwa adresu");
             }
 
-            var taxIdDecoded = DecodeTaxId(entity.TaxId);
-            var country = _client.Uchwyt.Panstwa().Dane.Pierwszy(x => x.KodPanstwaUE == entity.CountrySymbol.ToUpper());
+            var taxIdDecoded = DecodeTaxId(entity.TaxId, entity.CountrySymbol);
+
+            // Państwa szukamy po obu kodach z pary (GR/EL, XI/GB), bo nie wiadomo, którym z nich
+            // opisano je w słowniku Nexo - dla kodów bez aliasu oba warunki są takie same.
+            var countryCode = entity.CountrySymbol.Trim().ToUpper();
+            var countryCodeAlias = CountryCodeAlias(countryCode);
+            var country = _client.Uchwyt.Panstwa().Dane.Pierwszy(x => x.KodPanstwaUE == countryCode || x.KodPanstwaUE == countryCodeAlias);
             if (country != null)
             {
                 Console.WriteLine($"Znaleziono państwo {country.KodPanstwaUE} (ISO: {country.KodISOAlfa2()}), członek UE: {country.CzlonekUE}");
