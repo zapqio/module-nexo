@@ -111,7 +111,7 @@ namespace Nexo
             }
             invoice.Przelicz();
 
-            invoice.SetPayment(GetPaymentType(input.Payment), doc.KwotaDoZaplaty);
+            invoice.SetPayment(GetPaymentType(input.Payment, input.Currency), doc.KwotaDoZaplaty);
 
             invoice.SetOwnFields(
                 OwnField.Text(_settings.ZapqInvoiceIdOwnField, input.UniqueId),
@@ -598,15 +598,49 @@ namespace Nexo
             Console.WriteLine($"Wyszukano stawkę VAT {position.TaxPercent} po wartości");
             return tax;
         }
-        private FormaPlatnosci GetPaymentType(string payment)
+        /// <summary>
+        /// Formy płatności, które w słowniku Nexo mają osobną pozycję na walutę. Klucz to para
+        /// (nazwa z wejścia, waluta dokumentu), wartość - nazwa, pod jaką forma naprawdę siedzi
+        /// w Nexo. Integrator przysyła nazwę bez waluty, więc podmieniamy ją tutaj.
+        ///
+        /// Pary spoza mapy zostają nietknięte - dopisujemy je dopiero wtedy, gdy w Nexo naprawdę
+        /// powstanie osobna forma płatności, inaczej GetPaymentType wywróciłoby się na nazwie,
+        /// której w słowniku nie ma.
+        /// </summary>
+        private static readonly Dictionary<(string Payment, string Currency), string> PaymentNameByCurrency =
+            new Dictionary<(string Payment, string Currency), string>
+            {
+                [("Stripe RCP", "EUR")] = "Stripe RCP EUR",
+            };
+
+        private FormaPlatnosci GetPaymentType(string payment, string currency)
         {
-            var p = _client.Uchwyt.FormyPlatnosci().Dane.Pierwszy(x => x.Nazwa == payment);
+            var name = PaymentName(payment, currency);
+
+            var p = _client.Uchwyt.FormyPlatnosci().Dane.Pierwszy(x => x.Nazwa == name);
             if (p == null)
             {
-                throw new Exception($"Nie znaleziono formy płatności: {payment}");
+                throw new Exception($"Nie znaleziono formy płatności: {name}");
             }
-            Console.WriteLine($"Wyszukano formę płatności {payment} po nazwie");
+            Console.WriteLine($"Wyszukano formę płatności {name} po nazwie");
             return p;
+        }
+
+        /// <summary>Nazwa formy płatności do wyszukania - patrz <see cref="PaymentNameByCurrency"/>.</summary>
+        private static string PaymentName(string payment, string currency)
+        {
+            if (payment == null || currency == null)
+            {
+                return payment;
+            }
+
+            if (!PaymentNameByCurrency.TryGetValue((payment, currency), out var mapped))
+            {
+                return payment;
+            }
+
+            Console.WriteLine($"Forma płatności '{payment}' w walucie {currency} - szukam jako '{mapped}'");
+            return mapped;
         }
 
         /// <summary>

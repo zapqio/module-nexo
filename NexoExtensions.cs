@@ -27,7 +27,9 @@ namespace Nexo
             {
                 invoice.Platnosci.DodajPlatnoscOdroczona(paymentType, paymentValue);
             }
-            else
+            if (paymentType.Nazwa == "Stripe RCP" || 
+                paymentType.Nazwa == "Stripe RCP EUR"
+            )
             {
                 invoice.Platnosci.DodajPlatnoscNatychmiastowa(paymentType, paymentValue);
             }
